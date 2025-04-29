@@ -59,6 +59,14 @@ function lookAfterOne() {
         bash -c "${DESCRIBE_CMD}" &> "${DESC_TMP_F}"
         #cat "${DESC_TMP_F}"
 
+        success_cnt=$(grep 'completed successfully' ${DESC_TMP_F} | awk '{print$1}')
+        [[ -z "${success_cnt}" ]] && success_cnt=0
+
+        error_cnt=$(grep 'failed to complete' ${DESC_TMP_F} | awk '{print$1}')
+        [[ -z "${error_cnt}" ]] && error_cnt=0
+
+        [[ "${success_cnt}" -eq 0 ]] && [[ "${error_cnt}" -eq 0 ]] || break
+
         [[ "${started}" -eq 0 ]] && {
         	running_cnt=$(grep 'currently running' ${DESC_TMP_F} | awk '{print$1}')
 
@@ -69,14 +77,6 @@ function lookAfterOne() {
 
             	continue
 	}
-
-        success_cnt=$(grep 'completed successfully' ${DESC_TMP_F} | awk '{print$1}')
-        [[ -z "${success_cnt}" ]] && success_cnt=0
-
-        error_cnt=$(grep 'failed to complete' ${DESC_TMP_F} | awk '{print$1}')
-        [[ -z "${error_cnt}" ]] && error_cnt=0
-
-        [[ "${success_cnt}" -eq 0 ]] && [[ "${error_cnt}" -eq 0 ]] || break
 
         [[ ${wait_duration} -lt 60 ]] \
             && wait_duration=$(expr ${wait_duration} + 1)
