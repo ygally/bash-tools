@@ -1,0 +1,172 @@
+#!/bin/bash
+
+[[ -z "${DEFAULT_PROJECT_ID}" ]] && export DEFAULT_PROJECT_ID="prj-odv-stg-platform-e39d"
+[[ -z "${DEFAULT_REGION}" ]] && export DEFAULT_REGION="europe-west1"
+[[ -z "${DEFAULT_JOB_ID}" ]] && export DEFAULT_JOB_ID="php-cmd-to-test"
+
+function getTaskIdFrom() {
+  local f="$1"
+  local pattern="gcloud run jobs executions describe (.*)"
+  grep -E "${pattern}" $f \
+    | sed -r "s/^${pattern}$/\1/" \
+    || return 1
+}
+
+## Test Channel
+#WH="https://chat.googleapis.com/v1/spaces/AAAARjGeXss/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=OuG9CJ082un_5r6pde8JMSKM1TX6diuvYC2GH0mmzJA"
+
+## Chouf Perso
+WH="https://chat.googleapis.com/v1/spaces/AAQAjI-YxTw/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=kasK2dlc0t38S7IPCKjbd74h-RnXpImANShOVLiTomY"
+
+## Travel Tech CRM Channel
+#WH="https://chat.googleapis.com/v1/spaces/AAAANTT7wPw/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=hK18Foy9OyhEiltuO2f5VqkM8w8IO_0gk8LKcIEzppk"
+
+
+HEADER_CTYPE='Content-Type: application/json'
+TMP_CURL_FILE_OUT="tmp_sendToChat.log"
+function sendToChat() {
+    local title="$1"
+    local msg="$2"
+
+    wid1="{'textParagraph':{'text':'${msg}'}}"
+    #datas="{'cards':[{'header':{'title':'${title}','subtitle':'wouaouh'},'sections':[{'widgets':[{'textParagraph':{'text':'Hasta La Vista, Baby.'}}]}]}]}"
+    #datas="{'cards':[{'header':{'title':'${title}'},'sections':[{'widgets':[${wid1}]}]}]}"
+    datas="{'text': '${title}: ${msg}'}"
+
+    #echo curl -X POST "${WH}" -H "${HEADER_CTYPE}" -d "${datas}"
+    curl -o "${TMP_CURL_FILE_OUT}" -s -X POST "${WH}" -H "${HEADER_CTYPE}" -d "${datas}"
+}
+
+function lookAfterOne() {
+    local task_id="$1"
+
+    DESC_TMP_F="tmp_desc_${task_id}.log"
+
+    # define task watcher command
+    DESCRIBE_CMD="gcloud run jobs executions describe ${task_id}"
+    DESCRIBE_CMD="${DESCRIBE_CMD} --region=${REGION}"
+    DESCRIBE_CMD="${DESCRIBE_CMD} --project=${PROJECT_ID}"
+
+    started=0
+    success_cnt=0
+    error_cnt=0
+    wait_duration=1
+    while true; do
+	echo "wait for ${wait_duration}s..."
+        sleep "${wait_duration}s"
+	
+	#echo "${DESCRIBE_CMD}"
+        bash -c "${DESCRIBE_CMD}" &> "${DESC_TMP_F}"
+        #cat "${DESC_TMP_F}"
+
+        [[ "${started}" -eq 0 ]] && {
+        	running_cnt=$(grep 'currently running' ${DESC_TMP_F} | awk '{print$1}')
+
+		[[ -n "${running_cnt}" ]] && [[ "${running_cnt}" -gt 0 ]] && {
+            		started="1"
+            		sendToChat "${title}" "Task <${task_link}|${task_id}> has started."
+        	}
+
+            	continue
+	}
+
+        success_cnt=$(grep 'completed successfully' ${DESC_TMP_F} | awk '{print$1}')
+        [[ -z "${success_cnt}" ]] && success_cnt=0
+
+        error_cnt=$(grep 'failed to complete' ${DESC_TMP_F} | awk '{print$1}')
+        [[ -z "${error_cnt}" ]] && error_cnt=0
+
+        [[ "${success_cnt}" -eq 0 ]] && [[ "${error_cnt}" -eq 0 ]] || break
+
+        [[ ${wait_duration} -lt 60 ]] \
+            && wait_duration=$(expr ${wait_duration} + 1)
+        [[ "$((wait_duration % 10))" -eq 0 ]] \
+            && sendToChat "${title}" "Task <${task_link}|${task_id}> is still runnning..."
+        true
+    done
+
+    [[ "${error_cnt}" -eq 0 ]] && {
+        sendToChat "${title}" "Task <${task_link}|${task_id}> is terminated."
+        true
+    } || {
+        sendToChat "${title}" "Task <${task_link}|${task_id}> has failed."
+        false
+    }
+}
+
+function execOne() {
+    local title="$1"
+    local args="$2"
+    local cmdUID="$(echo "$3" | sed -r 's/[^a-z0-9]/_/gi')"
+    cmdUID="${cmdUID:-"$$_${RANDOM}"}"
+
+    EXEC_TMP_F="tmp_exec_${cmdUID}_start.log"
+
+    EXECUTE_CMD="gcloud run jobs execute ${JOB_ID}"
+    EXECUTE_CMD="${EXECUTE_CMD} --region=${REGION}"
+    EXECUTE_CMD="${EXECUTE_CMD} --project=${PROJECT_ID}"
+
+    [[ -n "${args}" ]] && {
+        EXECUTE_CMD="${EXECUTE_CMD} --args='${args}'"
+    }
+
+    #echo -e "${EXECUTE_CMD}\n    &> ${EXEC_TMP_F} ..."
+    bash -c "${EXECUTE_CMD}" &> "${EXEC_TMP_F}"
+
+    # retrieve task ID
+    job_task_id=$(getTaskIdFrom "${EXEC_TMP_F}")
+    # break if not found
+    [[ -z "${job_task_id}" ]] && {
+        echo "Cannot find task ID from file '${EXEC_TMP_F}'"
+        cat >&2 "${EXEC_TMP_F}"
+        return 1
+    }
+
+    task_link="https://console.cloud.google.com/run/jobs/executions/details/europe-west1/${job_task_id}/general?project=${PROJECT_ID}"
+    sendToChat "${title}" "Task <${task_link}|${job_task_id}> is starting..."
+
+    lookAfterOne "${job_task_id}"
+}
+
+function iterateOnLastParam() {
+    local mainTitle="$1"
+    local commonParams="$2"
+    local lastParamValues="$3"
+
+    for lastP in $(echo "${lastParamValues}"); do
+        title="${mainTitle} - ${lastP}"
+        arguments="${commonParams},${lastP}"
+        commandUnicID="${lastP}"
+
+        execOne "${title}" "${arguments}" "${commandUnicID}" || {
+            sendToChat "${mainTitle}" "One process has failed : ${lastP}.\nAbort others."
+            return 1
+        }
+    done
+
+    sendToChat "${mainTitle}" "All processes done : ${lastParamValues}"
+}
+
+###########################################################
+
+PROJECT_ID="${DEFAULT_PROJECT_ID}"
+REGION="${DEFAULT_REGION}"
+JOB_ID="${DEFAULT_JOB_ID}"
+
+while [[ ${1:0:1} == "-" ]]; do
+	case "$1" in
+		--project=* | -p=*) PROJECT_ID="$(expr "$1" : "[^=]\+=\(.*\)")" ; echo "new proj : ${PROJECT_ID}" ;;
+		--region=*  | -r=*) REGION="$(expr "$1" : "[^=]\+=\(.*\)")" ; echo "new region : ${REGION}" ;;
+		--job=*     | -j=*) JOB_ID="$(expr "$1" : "[^=]\+=\(.*\)")" ; echo "new job : ${JOB_ID}" ;;
+		*) echo >&2 "ERROR: unknown option '$1'" ; exit 1 ;;
+	esac
+	shift
+done
+
+case "$1" in
+	iterate) iterateOnLastParam "$2" "$3" "$4" ;;
+	exec)    execOne "$2" "$3" "$4" ;;
+	*)       echo >&2 "unknown command '$1'" ; exit 1 ;;
+esac
+
+exit
